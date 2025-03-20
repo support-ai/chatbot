@@ -7,6 +7,7 @@ import (
 
 	"chatbot/models"
 
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
 
@@ -53,9 +54,9 @@ func (r *Repository) CreateUser(user *models.User) error {
 func (r *Repository) CreateSession(session *models.ChatSession) error {
 	query := `
 		INSERT INTO chat_sessions (session_id, user_id, status)
-		VALUES ($1, $2, $3)
+		VALUES ($1::uuid, $2, $3)
 	`
-	_, err := r.db.Exec(query, session.SessionID, session.UserID, session.Status)
+	_, err := r.db.Exec(query, session.SessionID.String(), session.UserID, session.Status)
 	return err
 }
 
@@ -63,7 +64,7 @@ func (r *Repository) EndSession(sessionID string) error {
 	query := `
 		UPDATE chat_sessions
 		SET status = 'ended', ended_at = NOW()
-		WHERE session_id = $1
+		WHERE session_id = $1::uuid
 	`
 	_, err := r.db.Exec(query, sessionID)
 	return err
@@ -72,9 +73,9 @@ func (r *Repository) EndSession(sessionID string) error {
 func (r *Repository) SaveMessage(message *models.Message) error {
 	query := `
 		INSERT INTO messages (session_id, user_id, message, bot_reply)
-		VALUES ($1, $2, $3, $4)
+		VALUES ($1::uuid, $2, $3, $4)
 	`
-	_, err := r.db.Exec(query, message.SessionID, message.UserID, message.Message, message.BotReply)
+	_, err := r.db.Exec(query, message.SessionID.String(), message.UserID, message.Message, message.BotReply)
 	return err
 }
 
@@ -94,11 +95,79 @@ func (r *Repository) GetUserConversation(userID string) ([]models.Message, error
 	var messages []models.Message
 	for rows.Next() {
 		var msg models.Message
-		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.UserID, &msg.Message, &msg.BotReply, &msg.Timestamp)
+		var sessionIDStr string
+		err := rows.Scan(&msg.ID, &sessionIDStr, &msg.UserID, &msg.Message, &msg.BotReply, &msg.Timestamp)
 		if err != nil {
 			return nil, err
 		}
+
+		msg.SessionID, err = uuid.Parse(sessionIDStr)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing session ID: %v", err)
+		}
+
 		messages = append(messages, msg)
 	}
 	return messages, nil
+}
+
+func (r *Repository) GetActiveSession(userID string) (*models.ChatSession, error) {
+	query := `
+		SELECT id, session_id, user_id, status, created_at, ended_at
+		FROM chat_sessions
+		WHERE user_id = $1 AND status = 'active'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var session models.ChatSession
+	var sessionIDStr string
+	err := r.db.QueryRow(query, userID).Scan(
+		&session.ID,
+		&sessionIDStr,
+		&session.UserID,
+		&session.Status,
+		&session.CreatedAt,
+		&session.EndedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert string to UUID
+	session.SessionID, err = uuid.Parse(sessionIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing session ID: %v", err)
+	}
+
+	return &session, nil
+}
+
+func (r *Repository) GetSession(sessionID uuid.UUID) (*models.ChatSession, error) {
+	var session models.ChatSession
+	var sessionIDStr string
+
+	err := r.db.QueryRow(`
+		SELECT session_id::text, user_id, status, created_at
+		FROM chat_sessions
+		WHERE session_id = $1::uuid
+	`, sessionID.String()).Scan(&sessionIDStr, &session.UserID, &session.Status, &session.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %v", err)
+	}
+
+	session.SessionID, err = uuid.Parse(sessionIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse session ID: %v", err)
+	}
+
+	return &session, nil
 }

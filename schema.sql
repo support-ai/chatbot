@@ -1,3 +1,6 @@
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -9,11 +12,12 @@ CREATE TABLE IF NOT EXISTS users (
 -- Create chat_sessions table
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id SERIAL PRIMARY KEY,
-    session_id UUID DEFAULT gen_random_uuid(),
+    session_id UUID DEFAULT uuid_generate_v4(),
     user_id VARCHAR(255) REFERENCES users(user_id),
     status VARCHAR(20) DEFAULT 'active',
     created_at TIMESTAMP DEFAULT NOW(),
-    ended_at TIMESTAMP
+    ended_at TIMESTAMP,
+    UNIQUE(session_id)
 );
 
 -- Create messages table

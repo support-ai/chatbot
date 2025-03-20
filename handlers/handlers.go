@@ -25,9 +25,10 @@ func NewHandler(repo *repository.Repository, producer *kafka.Producer) *Handler 
 }
 
 type SendMessageRequest struct {
-	UserID   string `json:"user_id" binding:"required"`
-	Platform string `json:"platform" binding:"required"`
-	Message  string `json:"message" binding:"required"`
+	UserID    string `json:"user_id" binding:"required"`
+	Platform  string `json:"platform" binding:"required"`
+	Message   string `json:"message" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
 }
 
 type SendMessageResponse struct {
@@ -51,13 +52,39 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		return
 	}
 
+	// Parse the session ID from the request
+	sessionUUID, err := uuid.Parse(req.SessionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	// Verify the session exists and is active
+	session, err := h.repo.GetSession(sessionUUID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get session"})
+		return
+	}
+	if session == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Session not found"})
+		return
+	}
+	if session.Status != "active" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Session is not active"})
+		return
+	}
+	if session.UserID != req.UserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Session does not belong to this user"})
+		return
+	}
+
 	// TODO: Process message with NLP engine (Dialogflow/Rasa/LLM)
 	// For now, return a mock response
 	reply := "This is a mock response. In production, this would be processed by an NLP engine."
 
-	// Save message
+	// Save message with the session ID from the request
 	message := &models.Message{
-		SessionID: uuid.New(),
+		SessionID: sessionUUID,
 		UserID:    req.UserID,
 		Message:   req.Message,
 		BotReply:  reply,
@@ -71,7 +98,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	// Log to Kafka
 	chatLog := &models.ChatLog{
 		UserID:    req.UserID,
-		SessionID: message.SessionID.String(),
+		SessionID: sessionUUID.String(),
 		Message:   req.Message,
 		BotReply:  reply,
 		Timestamp: time.Now(),
@@ -117,6 +144,16 @@ func (h *Handler) StartSession(c *gin.Context) {
 	var req StartSessionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create or get user first
+	user := &models.User{
+		UserID:   req.UserID,
+		Platform: req.Platform,
+	}
+	if err := h.repo.CreateUser(user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
 	}
 
